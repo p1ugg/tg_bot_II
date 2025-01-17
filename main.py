@@ -386,9 +386,46 @@ async def handle_question(message: types.Message, state: FSMContext):
         {"input": f"User: {user_input}"},
         {"output": f"Bot: {answer}"}
     )
+    words_in_answer = len(answer.split())
 
-    # Отправка ответа пользователю
-    await message.answer(answer)
+    max_length = 80
+    confidence_score = min(words_in_answer / max_length, 1.0)
+
+    print(f"Длина ответа GigaChat: {words_in_answer} слов, коэффициент уверенности: {confidence_score}")
+
+    if confidence_score < 0.2:
+        await message.answer("Данный вопрос требует помощи эксперта, скоро вернусь.")
+
+        user_field = None
+        with open("users.csv", "r", encoding="utf-8") as user_file:
+            user_reader = csv.reader(user_file)
+            for row in user_reader:
+                if row[4][1:] == message.from_user.username:
+                    user_field = row[2]
+                    break
+
+        if user_field:
+            expert_found = False
+            with open("experts.csv", "r", encoding="utf-8") as expert_file:
+                expert_reader = csv.reader(expert_file)
+                for expert_row in expert_reader:
+                    if user_field in expert_row[2]:
+                        expert_username = expert_row[1]
+                        expert_found = True
+
+                        await bot.send_message(expert_username,
+                                               f"Пользователь @{message.from_user.username} задал вопрос: {message.text}. Пожалуйста, дайте ответ в ЛС пользователю.")
+                        break
+
+            if not expert_found:
+                await message.answer("Не удалось найти подходящего эксперта.")
+        else:
+            await message.answer("Не удалось найти подходящую область интересов для пользователя.")
+    else:
+        await message.answer(f"{answer}")
+
+    # # Отправка ответа пользователю
+    # await message.answer(answer)
 
     # Если задано 5 вопросов, предлагаем оценить бота
     if user_question_count[user_id] == 5:
