@@ -3,7 +3,7 @@ import os
 import random
 from datetime import datetime
 
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeDefault, Message
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -30,7 +30,17 @@ ACCESS_TOKEN = os.getenv('ACCESS_TOKEN')
 
 bot = Bot(token=API_TOKEN, parse_mode="HTML")
 storage = MemoryStorage()
+
 dp = Dispatcher(storage=storage)
+
+# Создаем отдельный роутер для общих сообщений
+general_router = Router()
+
+# Создаем роутер
+router = Router()
+
+dp.include_router(router)  # Роутер для вопросов и оценок
+dp.include_router(general_router)  # Роутер для неизвестных сообщений
 
 memory = ConversationBufferMemory(return_messages=True)
 
@@ -135,7 +145,7 @@ async def start(message: types.Message, state: FSMContext):
 @dp.message(StateFilter(Registration.name))
 async def process_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("Введите вашу фамилию:")
+    await message.answer("Приятно познакомиться! Теперь введите вашу фамилию:")
     await state.set_state(Registration.last_name)
 
 
@@ -185,7 +195,9 @@ async def process_username(message: types.Message, state: FSMContext):
         writer.writerow([user_data["name"], user_data["last_name"], user_data["field"], user_data["question"],
                          user_data["username"]])
 
-    await message.answer("Спасибо за регистрацию! Чтобы задавать вопросы напишите /ask.")
+
+
+    await message.answer(f"Спасибо за регистрацию, {user_data['name']}! Чтобы задавать вопросы напишите /ask.")
     await state.clear()
 
 
@@ -265,7 +277,6 @@ class LoggingMiddleware(BaseMiddleware):
 
     async def __call__(self, handler, event, data):
         """Записывает текстовые сообщения в логи."""
-        print(f"🟡 Middleware вызван! Тип события: {type(event)}")
 
         if event.message and event.message.text:  # Теперь проверяем event.message
             username = event.message.from_user.username or f"user_{event.message.from_user.id}"
@@ -363,8 +374,29 @@ async def cancel_asking(message: types.Message, state: FSMContext):
 user_question_count = {}
 
 
-@dp.message(Asking.asking)
-async def handle_question(message: types.Message, state: FSMContext):
+
+
+# Определяем состояния
+class RateBot(StatesGroup):
+    waiting_for_rating = State()
+
+
+# Обработчик оценки после 5 вопросов
+@router.message(RateBot.waiting_for_rating, F.text.regexp(r"^\d+$"))
+async def handle_rating(message: Message, state: FSMContext):
+    rating = int(message.text)
+
+    if rating < 5:
+        await message.answer("Сожалеем, что подвели вас. Постараемся улучшиться!")
+    else:
+        await message.answer("Спасибо за вашу оценку! Нам важно ваше мнение.")
+
+    # Завершаем состояние
+    await state.clear()
+
+# Основной обработчик вопросов
+@router.message(Asking.asking)
+async def handle_question(message: Message, state: FSMContext):
     user_id = message.from_user.id
     user_input = message.text
 
@@ -393,8 +425,8 @@ async def handle_question(message: types.Message, state: FSMContext):
 
     print(f"Длина ответа GigaChat: {words_in_answer} слов, коэффициент уверенности: {confidence_score}")
 
-    if confidence_score < 0.2:
-        await message.answer("Данный вопрос требует помощи эксперта, скоро вернусь.")
+    if confidence_score < 0.1:
+        await message.answer("Данный вопрос требует помощи эксперта, он с вами свяжется. Жду следующий вопрос!")
 
         user_field = None
         with open("users.csv", "r", encoding="utf-8") as user_file:
@@ -424,22 +456,24 @@ async def handle_question(message: types.Message, state: FSMContext):
     else:
         await message.answer(f"{answer}")
 
-    # # Отправка ответа пользователю
-    # await message.answer(answer)
-
     # Если задано 5 вопросов, предлагаем оценить бота
     if user_question_count[user_id] == 5:
         await message.answer("Оцените, пожалуйста, работу бота от 1 до 10:")
 
+        # Устанавливаем состояние ожидания оценки
+        await state.set_state(RateBot.waiting_for_rating)
 
-# Обработчик сообщений, если пользователь пишет вне режима вопросов
-@dp.message()
-async def unknown_message(message: types.Message):
+
+
+
+
+# Обработчик сообщений, если пользователь пишет вне режима вопросов или состояний
+@general_router.message(~F.state)
+async def unknown_message(message: Message):
     await message.answer(
         "Я не понимаю, что вы хотите. Чтобы задать вопрос, нажмите кнопку ниже или введите /ask.",
         reply_markup=get_ask_keyboard()
     )
-
 
 # Run bot
 async def main():
